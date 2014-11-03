@@ -95,7 +95,7 @@ define(function (require) {
                     r: r,          // 圆环外半径
                     startAngle: -45,
                     endAngle: 45,
-                    color: this.rcOption.handlerColor,
+                    color: this.rcOption.handleColor,
                     text: '>',
                     textX: x + r / 2 + 4,
                     textY: y - 0.5,
@@ -106,7 +106,7 @@ define(function (require) {
                     textFont: Math.floor(r / 2) + 'px arial'
                 },
                 highlightStyle: {
-                    color: zrColor.lift(this.rcOption.handlerColor, -0.2),
+                    color: zrColor.lift(this.rcOption.handleColor, -0.2),
                     brushType: 'fill'
                 },
                 clickable: true
@@ -149,7 +149,7 @@ define(function (require) {
                     x: x,
                     y: y,
                     r: r,
-                    color: this.rcOption.handlerColor,
+                    color: this.rcOption.handleColor,
                     text: text === 'scaleDown' ? '-' : '+',
                     textX: x,
                     textY: y - 2,
@@ -160,7 +160,7 @@ define(function (require) {
                     textFont: Math.floor(r) + 'px verdana'
                 },
                 highlightStyle: {
-                    color: zrColor.lift(this.rcOption.handlerColor, -0.2),
+                    color: zrColor.lift(this.rcOption.handleColor, -0.2),
                     brushType: 'fill'
                 },
                 clickable: true
@@ -281,6 +281,7 @@ define(function (require) {
             this.dircetionTimer = setInterval(function() {
                 self._dispatchEvent(params.event, params.target._roamType);
             }, 100);
+            zrEvent.stop(params.event);
         },
         
         _drictionHandlerOff: function(params) {
@@ -289,6 +290,7 @@ define(function (require) {
         
         __scaleHandler: function(params) {
             this._dispatchEvent(params.event, params.target._roamType);
+            zrEvent.stop(params.event);
         },
         
         _dispatchEvent: function(event, roamType){
@@ -302,7 +304,6 @@ define(function (require) {
                 },
                 this.myChart
             );
-            zrEvent.stop(event);
         },
         /**
          * 刷新

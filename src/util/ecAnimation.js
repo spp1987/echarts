@@ -96,6 +96,7 @@ define(function (require) {
         var newShapeStyle = newShape.style;
         if (!oldShape) {        // add
             oldShape = {
+                position : newShape.position,
                 style : {
                     x : newShapeStyle.x,
                     y : newShape._orient == 'vertical'
@@ -113,12 +114,25 @@ define(function (require) {
         var newY = newShapeStyle.y;
         var newWidth = newShapeStyle.width;
         var newHeight = newShapeStyle.height;
+        var newPosition = [newShape.position[0], newShape.position[1]];
         cloneStyle(
             newShape, oldShape,
             'x', 'y', 'width', 'height'
         );
+        newShape.position = oldShape.position;
 
         zr.addShape(newShape);
+        if (newPosition[0] != oldShape.position[0] || newPosition[1] != oldShape.position[1]) {
+            zr.animate(newShape.id, '')
+                .when(
+                    duration,
+                    {
+                        position: newPosition
+                    }
+                )
+                .start(easing);
+        }
+        
         zr.animate(newShape.id, 'style')
             .when(
                 duration,
@@ -330,14 +344,14 @@ define(function (require) {
      * @param {number} duration
      * @param {tring} easing
      */
-    function chord(zr, oldShape, newShape, duration, easing) {
+    function ribbon(zr, oldShape, newShape, duration, easing) {
         if (!oldShape) {        // add
             oldShape = {
                 style : {
                     source0 : 0,
-                    source1 : 360,
+                    source1 : newShape.style.source1 > 0 ? 360 : -360,
                     target0 : 0,
-                    target1 : 360
+                    target1 : newShape.style.target1 > 0 ? 360 : -360
                 }
             };
         }
@@ -445,6 +459,8 @@ define(function (require) {
         if (!oldShape) {
             oldShape = {
                 style : {
+                    xStart : newShape.style.xStart,
+                    yStart : newShape.style.yStart,
                     xEnd : newShape.style.xStart,
                     yEnd : newShape.style.yStart
                 }
@@ -486,7 +502,7 @@ define(function (require) {
      */
     function markline(zr, oldShape, newShape, duration, easing) {
         if (!newShape.style.smooth) {
-            newShape.style.pointList = !oldShape 
+            newShape.style.pointList = !oldShape
                 ? [
                     [newShape.style.xStart, newShape.style.yStart],
                     [newShape.style.xStart, newShape.style.yStart]
@@ -512,18 +528,25 @@ define(function (require) {
         }
         else {
             // 曲线动画
-            newShape.style.pointListLength = 1;
-            zr.addShape(newShape);
-            newShape.style.pointList = newShape.style.pointList 
-                                       || newShape.getPointList(newShape.style);
-            zr.animate(newShape.id, 'style')
-                .when(
-                    duration,
-                    {
-                        pointListLength : newShape.style.pointList.length
-                    }
-                )
-                .start(easing || 'QuinticOut');
+            if (!oldShape) {
+                // 新增
+                newShape.style.pointListLength = 1;
+                zr.addShape(newShape);
+                newShape.style.pointList = newShape.style.pointList 
+                                           || newShape.getPointList(newShape.style);
+                zr.animate(newShape.id, 'style')
+                    .when(
+                        duration,
+                        {
+                            pointListLength : newShape.style.pointList.length
+                        }
+                    )
+                    .start(easing || 'QuinticOut');
+            }
+            else {
+                // 过渡
+                zr.addShape(newShape);
+            }
         }
     }
 
@@ -535,7 +558,7 @@ define(function (require) {
         sector : sector,
         text : text,
         polygon : polygon,
-        chord : chord,
+        ribbon : ribbon,
         gaugePointer : gaugePointer,
         icon : icon,
         line : line,
