@@ -38,9 +38,6 @@ define(function (require) {
         self._legendSelected = function (param) {
             self.__legendSelected(param);
         };
-        self._dispatchHoverLink = function(param) {
-            return self.__dispatchHoverLink(param);
-        };
         
         this._colorIndex = 0;
         this._colorMap = {};
@@ -190,7 +187,7 @@ define(function (require) {
                 
                 if (this.legendOption.selectedMode) {
                     itemShape.onclick = textShape.onclick = this._legendSelected;
-                    itemShape.onmouseover =  textShape.onmouseover = this._dispatchHoverLink;
+                    itemShape.onmouseover =  textShape.onmouseover = this.hoverConnect;
                     itemShape.hoverConnect = textShape.id;
                     textShape.hoverConnect = itemShape.id;
                 }
@@ -489,8 +486,9 @@ define(function (require) {
                     || series[i].type === ecConfig.CHART_TYPE_FORCE
                     || series[i].type === ecConfig.CHART_TYPE_FUNNEL
                 ) {
-                    data = series[i].categories || series[i].data || series[i].nodes;
-
+                    data = series[i].type != ecConfig.CHART_TYPE_FORCE
+                           ? series[i].data         // 饼图、雷达图、和弦图得查找里面的数据名字
+                           : series[i].categories;  // 力导布局查找categories配置
                     for (var j = 0, k = data.length; j < k; j++) {
                         if (data[j].name === name) {
                             return {
@@ -593,22 +591,7 @@ define(function (require) {
                 this.myChart
             );
         },
-        
-        /**
-         * 产生hover link事件 
-         */
-        __dispatchHoverLink : function(param) {
-            this.messageCenter.dispatch(
-                ecConfig.EVENT.LEGEND_HOVERLINK,
-                param.event,
-                {
-                    target: param.target._name
-                },
-                this.myChart
-            );
-            return;
-        },
-        
+
         /**
          * 刷新
          */
@@ -847,23 +830,37 @@ define(function (require) {
                 endAngle: 135
             });
         },
-        
-        eventRiver: function (ctx, style) {
+        /*
+        chord: function (ctx, style) {
             var x = style.x;
             var y = style.y;
             var width = style.width;
             var height = style.height;
             ctx.moveTo(x, y + height);
-            ctx.bezierCurveTo(
-                x + width, y + height, x, y + 4, x + width, y + 4
-            );
+            BeziercurveShape.prototype.buildPath(ctx, {
+                xStart: x,
+                yStart: y + height,
+                cpX1: x + width,
+                cpY1: y + height,
+                cpX2: x,
+                cpY2: y + 4,
+                xEnd: x + width,
+                yEnd: y + 4
+            });
             ctx.lineTo(x + width, y);
-            ctx.bezierCurveTo(
-                x, y, x + width, y + height - 4, x, y + height - 4
-            );
+            BeziercurveShape.prototype.buildPath(ctx, {
+                xStart: x + width,
+                yStart: y,
+                cpX1: x,
+                cpY1: y,
+                cpX2: x + width,
+                cpY2: y + height - 4,
+                xEnd: x,
+                yEnd: y + height - 4
+            });
             ctx.lineTo(x, y + height);
         },
-        
+        */
         k: function (ctx, style) {
             var x = style.x;
             var y = style.y;

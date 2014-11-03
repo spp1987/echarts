@@ -47,20 +47,12 @@ option = {
         y:'bottom'
     },
     tooltip : {
-        trigger: 'item',
-        formatter: function (params) {
-            if (params[4]) { // is edge
-                return params[2].weight;
-            } else {// is node
-                return params[1]
-            }
-        }
+        trigger: 'item'
     },
     toolbox: {
         show : true,
         feature : {
             restore : {show: true},
-            magicType: {show: true, type: ['force', 'chord']},
             saveAsImage : {show: true}
         }
     },

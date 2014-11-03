@@ -11,12 +11,10 @@ define(function (require) {
     var ComponentBase = require('../component/base');
     var ChartBase = require('./base');
 
-    var Graph = require('../data/Graph');
-    var ForceLayout = require('../layout/Force');
+    var ForceLayout = require('./forceLayoutWorker');
     
     // 图形依赖
     var LineShape = require('zrender/shape/Line');
-    var BezierCurveShape = require('zrender/shape/BezierCurve');
     var ImageShape = require('zrender/shape/Image');
     var IconShape = require('../util/shape/Icon');
 
@@ -25,6 +23,33 @@ define(function (require) {
     var zrUtil = require('zrender/tool/util');
     var zrConfig = require('zrender/config');
     var vec2 = require('zrender/tool/vector');
+
+    var NDArray = require('../util/ndarray');
+    var ArrayCtor = typeof(Float32Array) == 'undefined' ? Array : Float32Array;
+
+    var requestAnimationFrame = window.requestAnimationFrame
+                                || window.msRequestAnimationFrame
+                                || window.mozRequestAnimationFrame
+                                || window.webkitRequestAnimationFrame
+                                || function (func){setTimeout(func, 16);};
+
+    // Use inline web worker
+    var workerUrl;
+    if (
+        typeof(Worker) !== 'undefined' &&
+        typeof(Blob) !== 'undefined'
+    ) {
+        try {
+            var blob = new Blob([ForceLayout.getWorkerCode()]);
+            workerUrl = window.URL.createObjectURL(blob);   
+        } catch(e) {
+            workerUrl = '';
+        }
+    }
+
+    function getToken() {
+        return Math.round(new Date().getTime() / 100) % 10000000;
+    }
 
     /**
      * 构造函数
@@ -41,16 +66,21 @@ define(function (require) {
         ChartBase.call(this);
 
         // 保存节点的位置，改变数据时能够有更好的动画效果
+        // TODO
         this.__nodePositionMap = {};
 
-        this._graph = new Graph(true);
-        this._layout = new ForceLayout();
+        this._nodeShapes = [];
+        this._linkShapes = [];
 
-        this._layout.onupdate = function() {
-            self._step();
-        };
+        this._updating = true;
+
+        this._filteredNodes = null;
+        this._filteredLinks = null;
+        this._rawNodes = null;
+        this._rawLinks = null;
 
         this._steps = 1;
+        this._coolDown = 0.99;
 
         // 关闭可拖拽属性
         this.ondragstart = function() {
@@ -66,8 +96,7 @@ define(function (require) {
         this.onmousemove = function() {
             onmousemove.apply(self, arguments);
         };
-
-        this.refresh(option);
+        this._init();
     }
 
     /**
@@ -80,12 +109,52 @@ define(function (require) {
         type : ecConfig.CHART_TYPE_FORCE,
 
         _init: function() {
-            // var self = this;
+            var self = this;
+
+            this.clear();
+
+            this._updating = true;
+        
+            this._buildShape();
+
+            if (this._layoutWorker) {
+                this._layoutWorker.onmessage = function(e) {
+                    if (self._temperature < 0.01) {
+                        requestAnimationFrame(function() {
+                            self._step.call(self, e);
+                        });   
+                    } else {
+                        self._step.call(self, e);
+                    }
+                };
+
+                this._layoutWorker.postMessage({
+                    cmd: 'update',
+                    steps: this._steps,
+                    temperature: this._temperature,
+                    coolDown: this._coolDown
+                });
+            }
+            else {
+                var cb = function() {
+                    if (self._updating) {
+                        self._step();
+                        requestAnimationFrame(cb);
+                    }
+                };
+
+                requestAnimationFrame(cb);
+            }
+        },
+
+        _buildShape: function() {
             var legend = this.component.legend;
             var series = this.series;
             var serieName;
 
-            this.clear();
+            this._temperature = 1;
+
+            this.shapeList.length = 0;
 
             for (var i = 0, l = series.length; i < l; i++) {
                 var serie = series[i];
@@ -93,6 +162,28 @@ define(function (require) {
                     series[i] = this.reformOption(series[i]);
                     serieName = series[i].name || '';
                     
+                    if (workerUrl && serie.useWorker) {
+                        try {
+                            if (!this._layoutWorker) {
+                                this._layoutWorker = new Worker(workerUrl);
+                            }
+                            this._layout = null;   
+                        } catch(e) {    // IE10-11 will throw security error when using blog url
+                            this._layoutWorker = null;
+                            if (!this._layout) {
+                                this._layout = new ForceLayout();
+                            }
+                        }
+                    } else {
+                        if (!this._layout) {
+                            this._layout = new ForceLayout();
+                        }
+                        if (this._layoutWorker) {
+                            this._layoutWorker.terminate();
+                            this._layoutWorker = null;
+                        }
+                    }
+
                     // 系列图例开关
                     this.selectedMap[serieName] = 
                         legend ? legend.isSelected(serieName) : true;
@@ -102,317 +193,259 @@ define(function (require) {
 
                     this.buildMark(i);
                     
+                    // 同步selected状态
+                    var categories = serie.categories;
+                    for (var j = 0, len = categories.length; j < len; j++) {
+                        if (categories[j].name) {
+                            if (legend){
+                                this.selectedMap[j] = 
+                                    legend.isSelected(categories[j].name);
+                            } else {
+                                this.selectedMap[j] = true;
+                            }
+                        }
+                    }
+
+                    this._preProcessData(serie);
+
+                    this._nodeShapes.length = 0;
+                    this._linkShapes.length = 0;
+
+                    this._buildLinkShapes(serie);
+                    this._buildNodeShapes(serie);
+
+                    this._initLayout(serie);
+
+                    this._updateLinkShapes();
+
                     // TODO 多个 force 
-                    this._initSerie(serie, i);
+                    this._forceSerie = serie;
                     break;
                 }
             }
         },
 
-        _getNodeCategory: function (serie, node) {
-            return serie.categories && serie.categories[node.category || 0];
-        },
+        _preProcessData: function(serie) {
+            this._rawNodes = this.query(serie, 'nodes');
+            this._rawLinks = zrUtil.clone(this.query(serie, 'links'));
 
-        _getNodeQueryTarget: function (serie, node, type) {
-            type = type || 'normal';
-            var category = this._getNodeCategory(serie, node) || {};
-            return [
-                // Node
-                node.itemStyle && node.itemStyle[type],
-                // Category
-                category && category.itemStyle && category.itemStyle[type],
-                // Serie
-                serie.itemStyle[type].nodeStyle
-            ];
-        },
+            var filteredNodeList = [];
+            var filteredNodeMap = {};
+            var cursor = 0;
+            var self = this;
+            this._filteredNodes = _filter(this._rawNodes, function (node, i) {
+                if (!node) {
+                    return;
+                }
+                if (node.ignore) {
+                    return;
+                }
+                var idx = -1;
+                if (
+                    typeof(node.category) == 'undefined'
+                    || self.selectedMap[node.category]
+                ) {
+                    idx = cursor++;
+                }
+                if (node.name) {
+                    filteredNodeMap[node.name] = idx;
+                }
+                filteredNodeList[i] = idx;
 
-        _getEdgeQueryTarget: function (serie, edge, type) {
-            type = type || 'normal';
-            return [
-                (edge.itemStyle && edge.itemStyle[type]),
-                serie.itemStyle[type].linkStyle
-            ];
-        },
-
-        _initSerie: function(serie, serieIdx) {
-            this._temperature = 1;
-
-            // data-matrix 表示数据
-            if (serie.data) {
-                this._graph = this._getSerieGraphFromDataMatrix(serie);
-            }
-            // node-links 表示数据
-            else {
-                this._graph = this._getSerieGraphFromNodeLinks(serie);
-            }
-
-            this._buildLinkShapes(serie, serieIdx);
-            this._buildNodeShapes(serie, serieIdx);
-
-            // Enable pan and zooom
-            this.zr.modLayer(this.getZlevelBase(), {
-                panable: serie.panable,
-                zoomable: serie.zoomable
+                return idx >= 0;
             });
-
-            this._initLayout(serie);
-
-            this._step();
-        },
-
-        _getSerieGraphFromDataMatrix: function (serie) {
-            var nodesData = [];
-            var count = 0;
-            var matrix = [];
-            // 复制一份新的matrix
-            for (var i = 0; i < serie.matrix.length; i++) {
-                matrix[i] = serie.matrix[i].slice();
-            }
-            var data = serie.data || serie.nodes;
-            for (var i = 0; i < data.length; i++) {
-                var node = {};
-                var group = data[i];
-                for (var key in group) {
-                    // name改为id
-                    if (key === 'name') {
-                        node['id'] = group['name'];
-                    }
-                    else {
-                        node[key] = group[key];
-                    }
+            var source;
+            var target;
+            this._filteredLinks = _filter(this._rawLinks, function (link, i){
+                source = link.source;
+                target = link.target;
+                var ret = true;
+                var idx = typeof(source) === 'string'
+                    ? filteredNodeMap[source]    // source 用 node id 表示
+                    : filteredNodeList[source];  // source 用 node index 表示
+                if (typeof(idx) == 'undefined') {
+                    idx = -1;
                 }
-                // legends 选择优先级 category -> group
-                var category = this._getNodeCategory(serie, group);
-                var name = category ? category.name : group.name;
 
-                this.selectedMap[name] = this.isSelected(name);
-                if (this.selectedMap[name]) {
-                    nodesData.push(node);
-                    count++;
+                if (idx >= 0) {
+                    link.source = idx;
+                } else {
+                    ret = false;
                 }
-                else {
-                    // 过滤legend未选中的数据
-                    matrix.splice(count, 1);
-                    for (var j = 0; j < matrix.length; j++) {
-                        matrix[j].splice(count, 1);
-                    }
+
+                var idx = typeof(target) === 'string'
+                    ? filteredNodeMap[target]    // target 用 node id 表示
+                    : filteredNodeList[target];  // target 用 node index 表示
+                if (typeof(idx) == 'undefined') {
+                    idx = -1;
                 }
-            }
 
-            var graph = Graph.fromMatrix(nodesData, matrix, true);
+                if (idx >= 0) {
+                    link.target = idx;
+                } else {
+                    ret = false;
+                }
+                // 保存原始链接中的index
+                link.rawIndex = i;
 
-            // Prepare layout parameters
-            graph.eachNode(function (n, idx) {
-                n.layout = {
-                    size: n.data.value,
-                    mass: 0
-                };
-                n.rawIndex = idx;
+                return ret;
             });
-            graph.eachEdge(function (e) {
-                e.layout = {
-                    weight: e.data.weight,
-                };
-            });
-
-            return graph;
-        },
-
-        _getSerieGraphFromNodeLinks: function (serie) {
-            var graph = new Graph(true);
-            var nodes = serie.data || serie.nodes;
-            for (var i = 0, len = nodes.length; i < len; i++) {
-                var n = nodes[i];
-                if (!n || n.ignore) {
-                    continue;
-                }
-                // legends 选择优先级 category -> group
-                var category = this._getNodeCategory(serie, n);
-                var name = category ? category.name : n.name;
-
-                this.selectedMap[name] = this.isSelected(name);
-                if (this.selectedMap[name]) {
-                    var node = graph.addNode(n.name, n);
-                    node.rawIndex = i;
-                }
-            }
-
-            for (var i = 0, len = serie.links.length; i < len; i++) {
-                var e = serie.links[i];
-                var n1 = e.source;
-                var n2 = e.target;
-                if (typeof(n1) === 'number') {
-                    n1 = nodes[n1];
-                    if (n1) {
-                        n1 = n1.name;
-                    }
-                }
-                if (typeof(n2) === 'number') {
-                    n2 = nodes[n2];
-                    if (n2) {
-                        n2 = n2.name;
-                    }
-                }
-                var edge = graph.addEdge(n1, n2, e);
-                if (edge) {
-                    edge.rawIndex = i;
-                }
-            }
-
-            graph.eachNode(function (n) {
-                var value = n.data.value;
-                if (value == null) {    // value 是 null 或者 undefined
-                    value = 0;
-                    // 默认使用所有边值的和作为节点的大小, 不修改 data 里的数值
-                    for (var i = 0; i < n.edges.length; i++) {
-                        value += n.edges[i].data.weight || 0;
-                    }
-                }
-                n.layout = {
-                    size: value,
-                    mass: 0
-                };
-            });
-            graph.eachEdge(function (e) {
-                e.layout = {
-                    // 默认 weight 为1
-                    weight: e.data.weight == null ? 1 : e.data.weight,
-                };
-            });
-
-            return graph;
         },
 
         _initLayout: function(serie) {
-            var graph = this._graph;
-            var len = graph.nodes.length;
+
+            var nodes = this._filteredNodes;
+            var links = this._filteredLinks;
+            var shapes = this._nodeShapes;
+            var len = nodes.length;
 
             var minRadius = this.query(serie, 'minRadius');
             var maxRadius = this.query(serie, 'maxRadius');
-
             this._steps = serie.steps || 1;
+            this._coolDown = serie.coolDown || 0.99;
 
-            this._layout.center = this.parseCenter(this.zr, serie.center);
-            this._layout.width = this.parsePercent(serie.size, this.zr.getWidth());
-            this._layout.height = this.parsePercent(serie.size, this.zr.getHeight());
-
-            this._layout.large = serie.large;
-            this._layout.scaling = serie.scaling;
-            this._layout.ratioScaling = serie.ratioScaling;
-            this._layout.gravity = serie.gravity;
-            this._layout.temperature = 1;
-            this._layout.coolDown = serie.coolDown;
-            this._layout.preventNodeEdgeOverlap = serie.preventOverlap;
-            this._layout.preventNodeOverlap = serie.preventOverlap;
+            var center = this.parseCenter(this.zr, serie.center);
+            var width = this.parsePercent(serie.size, this.zr.getWidth());
+            var height = this.parsePercent(serie.size, this.zr.getHeight());
+            var size = Math.min(width, height);
 
             // 将值映射到minRadius-maxRadius的范围上
-            var min = Infinity; var max = -Infinity;
+            var radius = [];
             for (var i = 0; i < len; i++) {
-                var gNode = graph.nodes[i];
-                max = Math.max(gNode.layout.size, max);
-                min = Math.min(gNode.layout.size, min);
-            }
-            var divider = max - min;
-            for (var i = 0; i < len; i++) {
-                var gNode = graph.nodes[i];
-                if (divider > 0) {
-                    gNode.layout.size = 
-                        (gNode.layout.size - min) * (maxRadius - minRadius) / divider
-                        + minRadius;
-                    // 节点质量是归一的
-                    gNode.layout.mass = gNode.layout.size / maxRadius;
-                } else {
-                    gNode.layout.size = (maxRadius - minRadius) / 2;
-                    gNode.layout.mass = 0.5;
-                }
+                var node = nodes[i];
+                radius.push(node.value || 1);
             }
 
+            var arr = new NDArray(radius);
+            radius = arr.map(minRadius, maxRadius).toArray();
+            var max = arr.max();
+            if (max === 0) {
+                return;
+            }
+            var massArr = arr.mul(1/max, arr).toArray();
+            var positionArr = new ArrayCtor(len * 2);
+
             for (var i = 0; i < len; i++) {
-                // var initPos;
-                var gNode = graph.nodes[i];
-                if (typeof(this.__nodePositionMap[gNode.id]) !== 'undefined') {
-                    gNode.layout.position = vec2.create();
-                    vec2.copy(gNode.layout.position, this.__nodePositionMap[gNode.id]);
-                }
-                else if (typeof(gNode.data.initial) !== 'undefined') {
-                    gNode.layout.position = vec2.create();
-                    vec2.copy(gNode.layout.position, gNode.data.initial);
-                }
-                else {
-                    var center = this._layout.center;
-                    var size = Math.min(this._layout.width, this._layout.height);
-                    gNode.layout.position = _randomInSquare(
+                var initPos;
+                var node = nodes[i];
+                if (typeof(this.__nodePositionMap[node.name]) !== 'undefined') {
+                    initPos = vec2.create();
+                    vec2.copy(initPos, this.__nodePositionMap[node.name]);
+                } else if (typeof(node.initial) !== 'undefined') {
+                    initPos = Array.prototype.slice.call(node.initial);
+                } else {
+                    initPos = _randomInSquare(
                         center[0], center[1], size * 0.8
                     );
                 }
-                var style = gNode.shape.style;
-                var radius = gNode.layout.size;
-                style.width = style.width || (radius * 2);
-                style.height = style.height || (radius * 2);
+                var style = shapes[i].style;
+                style.width = style.width || (radius[i] * 2);
+                style.height = style.height || (radius[i] * 2);
                 style.x = -style.width / 2;
                 style.y = -style.height / 2;
-                vec2.copy(gNode.shape.position, gNode.layout.position);
+                shapes[i].position = initPos;
+
+                positionArr[i * 2] = initPos[0];
+                positionArr[i * 2 + 1] = initPos[1];
             }
 
-            // 边
-            len = graph.edges.length;
-            max = -Infinity;
+            len = links.length;
+            var edgeArr = new ArrayCtor(len * 2);
+            var edgeWeightArr = new ArrayCtor(len);
             for (var i = 0; i < len; i++) {
-                var e = graph.edges[i];
-                if (e.layout.weight > max) {
-                    max = e.layout.weight;
-                }
-            }
-            // 权重归一
-            for (var i = 0; i < len; i++) {
-                var e = graph.edges[i];
-                e.layout.weight /= max;
+                var link = links[i];
+                edgeArr[i * 2] = link.source;
+                edgeArr[i * 2 + 1] = link.target;
+                edgeWeightArr[i] = link.weight || 1;
             }
 
-            this._layout.init(graph, serie.useWorker);
+            arr = new NDArray(edgeWeightArr);
+            var max = arr.max();
+            if (max === 0) {
+                return;
+            }
+            var edgeWeightArr = arr.mul(1 / max, arr)._array;
+
+            var config = {
+                center: center,
+                width: serie.ratioScaling ? width : size,
+                height: serie.ratioScaling ? height : size,
+                scaling: serie.scaling || 1.0,
+                gravity: serie.gravity || 1.0,
+                barnesHutOptimize: serie.large
+            };
+
+            if (this._layoutWorker) {
+
+                this._token = getToken();
+
+                this._layoutWorker.postMessage({
+                    cmd: 'init',
+                    nodesPosition: positionArr,
+                    nodesMass: massArr,
+                    nodesSize: radius,
+                    edges: edgeArr,
+                    edgesWeight: edgeWeightArr,
+                    token: this._token
+                });
+
+                this._layoutWorker.postMessage({
+                    cmd: 'updateConfig',
+                    config: config
+                });
+
+            } else {
+
+                zrUtil.merge(this._layout, config, true);
+                this._layout.initNodes(positionArr, massArr, radius);
+                this._layout.initEdges(edgeArr, edgeWeightArr);   
+            }
         },
 
-        _buildNodeShapes: function(serie, serieIdx) {
-            var graph = this._graph;
-
+        _buildNodeShapes: function(serie) {
             var categories = this.query(serie, 'categories');
+            var nodes = this._filteredNodes;
+            var len = nodes.length;
             var legend = this.component.legend;
 
-            graph.eachNode(function (node) {
-                var category = this._getNodeCategory(serie, node.data);
-                var queryTarget = [node.data, category, serie];
-                var styleQueryTarget = this._getNodeQueryTarget(serie, node.data);
-                var emphasisStyleQueryTarget = this._getNodeQueryTarget(
-                    serie, node.data, 'emphasis'
-                );
+            for (var i = 0; i < len; i++) {
+                var node = nodes[i];
 
                 var shape = new IconShape({
-                    style: {
-                        x: 0,
-                        y: 0,
-                        color: this.deepQuery(styleQueryTarget, 'color'),
-                        brushType: 'both',
-                        // 兼容原有写法
-                        strokeColor: this.deepQuery(styleQueryTarget, 'strokeColor')
-                            || this.deepQuery(styleQueryTarget, 'borderColor'),
-                        lineWidth: this.deepQuery(styleQueryTarget, 'lineWidth')
-                            || this.deepQuery(styleQueryTarget, 'borderWidth')
+                    style : {
+                        x : 0,
+                        y : 0
                     },
-                    highlightStyle: {
-                        color: this.deepQuery(styleQueryTarget, 'color', 'emphasis'),
-                        // 兼容原有写法
-                        strokeColor: this.deepQuery(styleQueryTarget, 'strokeColor', 'emphasis')
-                            || this.deepQuery(styleQueryTarget, 'borderColor', 'emphasis'),
-                        lineWidth: this.deepQuery(styleQueryTarget, 'lineWidth', 'emphasis')
-                            || this.deepQuery(styleQueryTarget, 'borderWidth', 'emphasis')
-                    },
-                    clickable: serie.clickable,
-                    zlevel: this.getZlevelBase()
+                    clickable: this.query(serie, 'clickable'),
+                    highlightStyle : {}
                 });
-                if (!shape.style.color) {
-                    shape.style.color = category 
-                        ? this.getColor(category.name) : this.getColor(node.id);
+
+                var queryTarget = [];
+                var shapeNormalStyle = [];
+                var shapeEmphasisStyle = [];
+
+                queryTarget.push(node);
+                if (node.itemStyle) {
+                    shapeNormalStyle.push(node.itemStyle.normal);
+                    shapeEmphasisStyle.push(node.itemStyle.emphasis);
                 }
+                if (typeof(node.category) !== 'undefined') {
+                    var category = categories[node.category];
+                    if (category) {
+                        // 使用 Legend.getColor 配置默认 category 的默认颜色
+                        category.itemStyle = category.itemStyle || {};
+                        category.itemStyle.normal = category.itemStyle.normal || {};
+                        category.itemStyle.normal.color = category.itemStyle.normal.color
+                            || legend.getColor(category.name);
+
+                        queryTarget.push(category);
+                        shapeNormalStyle.unshift(category.itemStyle.normal);
+                        shapeEmphasisStyle.unshift(category.itemStyle.emphasis);
+                    }
+                }
+                queryTarget.push(serie);
+                shapeNormalStyle.unshift(serie.itemStyle.normal.nodeStyle);
+                shapeEmphasisStyle.unshift(serie.itemStyle.emphasis.nodeStyle);
 
                 shape.style.iconType = this.deepQuery(queryTarget, 'symbol');
                 // 强制设定节点大小，否则默认映射到 minRadius 到 maxRadius 后的值
@@ -429,27 +462,43 @@ define(function (require) {
                         clickable: shape.clickable
                     });
                 }
+
+                // 节点样式
+                for (var k = 0; k < shapeNormalStyle.length; k++) {
+                    if (shapeNormalStyle[k]) {
+                        zrUtil.merge(shape.style, shapeNormalStyle[k], true);
+                    }
+                } 
+                // 节点高亮样式
+                for (var k = 0; k < shapeEmphasisStyle.length; k++) {
+                    if (shapeEmphasisStyle[k]) {
+                        zrUtil.merge(shape.highlightStyle, shapeEmphasisStyle[k], true);
+                    }
+                }
                 
                 // 节点标签样式
                 if (this.deepQuery(queryTarget, 'itemStyle.normal.label.show')) {
-                    shape.style.text = node.data.name;
+                    shape.style.text = node.name;
+                    shape.style.textPosition = 'inside';
                     var labelStyle = this.deepQuery(
-                        queryTarget, 'itemStyle.normal.label'
+                        queryTarget, 'itemStyle.normal.label.textStyle'
                     ) || {};
-                    var textStyle = labelStyle.textStyle || {};
-                    shape.style.textPosition = labelStyle.position;
-                    shape.style.textColor = textStyle.color || '#fff';
-                    shape.style.textFont = this.getFont(textStyle);
+                    shape.style.textColor = labelStyle.color || '#fff';
+                    shape.style.textAlign = labelStyle.align || 'center';
+                    shape.style.textBaseline = labelStyle.baseline || 'middle';
+                    shape.style.textFont = this.getFont(labelStyle);
                 }
 
                 if (this.deepQuery(queryTarget, 'itemStyle.emphasis.label.show')) {
-                    shape.highlightStyle.text = node.data.name;
+                    shape.highlightStyle.text = node.name;
+                    shape.highlightStyle.textPosition = 'inside';
                     var labelStyle = this.deepQuery(
                         queryTarget, 'itemStyle.emphasis.label.textStyle'
                     ) || {};
-                    shape.highlightStyle.textPosition = labelStyle.position;
-                    shape.highlightStyle.textColor = textStyle.color || '#fff';
-                    shape.highlightStyle.textFont = this.getFont(textStyle);
+                    shape.highlightStyle.textColor = labelStyle.color || '#fff';
+                    shape.highlightStyle.textAlign = labelStyle.align  || 'center';
+                    shape.highlightStyle.textBaseline = labelStyle.baseline || 'middle';
+                    shape.highlightStyle.textFont = this.getFont(labelStyle);
                 }
 
                 // 拖拽特性
@@ -469,45 +518,40 @@ define(function (require) {
                 // !!Pack data before addShape
                 ecData.pack(
                     shape,
-                    serie,
-                    serieIdx,
-                    // data
-                    node.data,
-                    // data index
-                    node.rawIndex,
-                    // name
-                    node.data.name || '',
                     // category
-                    // special
-                    node.category
+                    {
+                        name : categoryName
+                    },
+                    // series index
+                    0,
+                    // data
+                    node,
+                    // data index
+                    zrUtil.indexOf(this._rawNodes, node),
+                    // name
+                    node.name || '',
+                    // value
+                    node.value
                 );
                 
+                this._nodeShapes.push(shape);
                 this.shapeList.push(shape);
                 this.zr.addShape(shape);
-
-                node.shape = shape;
-            }, this);
+            }
         },
 
-        _buildLinkShapes: function(serie, serieIdx) {
-            var graph = this._graph;
-            var len = graph.edges.length;
+        _buildLinkShapes: function(serie) {
+
+            var nodes = this._filteredNodes;
+            var links = this._filteredLinks;
+            var len = links.length;
 
             for (var i = 0; i < len; i++) {
-                var gEdge = graph.edges[i];
-                var link = gEdge.data;
-                var source = gEdge.node1;
-                var target = gEdge.node2;
+                var link = links[i];
+                var source = nodes[link.source];
+                var target = nodes[link.target];
 
-                var queryTarget = this._getEdgeQueryTarget(serie, gEdge);
-                var linkType = this.deepQuery(queryTarget, 'type');
-                // TODO 暂时只有线段支持箭头
-                if (serie.linkSymbol && serie.linkSymbol !== 'none') {
-                    linkType = 'line';
-                }
-                var LinkShapeCtor = linkType === 'line' ? LineShape : BezierCurveShape;
-
-                var linkShape = new LinkShapeCtor({
+                var linkShape = new LineShape({
                     style : {
                         xStart : 0,
                         yStart : 0,
@@ -516,8 +560,7 @@ define(function (require) {
                         lineWidth : 1
                     },
                     clickable: this.query(serie, 'clickable'),
-                    highlightStyle : {},
-                    zlevel: this.getZlevelBase()
+                    highlightStyle : {}
                 });
 
                 zrUtil.merge(
@@ -543,39 +586,33 @@ define(function (require) {
                     }
                 }
 
-                // 兼容原有写法
-                linkShape.style.lineWidth
-                    = linkShape.style.lineWidth || linkShape.style.width;
-                linkShape.style.strokeColor
-                    = linkShape.style.strokeColor || linkShape.style.color;
-                linkShape.highlightStyle.lineWidth
-                    = linkShape.highlightStyle.lineWidth || linkShape.highlightStyle.width;
-                linkShape.highlightStyle.strokeColor
-                    = linkShape.highlightStyle.strokeColor || linkShape.highlightStyle.color;
-
+                var link = this._rawLinks[link.rawIndex];
                 ecData.pack(
                     linkShape,
                     // serie
                     serie,
                     // serie index
-                    serieIdx,
+                    0,
                     // link data
-                    gEdge.data,
+                    {
+                        source : link.source,
+                        target : link.target,
+                        weight : link.weight || 0
+                    },
                     // link data index
-                    gEdge.rawIndex == null ? i : gEdge.rawIndex,
+                    link.rawIndex,
                     // source name - target name
-                    gEdge.data.name || (source.id + ' - ' + target.id),
-                    // link source id
+                    source.name + ' - ' + target.name,
+                    // link weight
+                    link.weight || 0,
                     // special
-                    source.id,
-                    // link target id
-                    // special2
-                    target.id
+                    // 这一项只是为了表明这是条边
+                    true
                 );
 
+                this._linkShapes.push(linkShape);
                 this.shapeList.push(linkShape);
                 this.zr.addShape(linkShape);
-                gEdge.shape = linkShape;
 
                 // Arrow shape
                 if (serie.linkSymbol && serie.linkSymbol !== 'none') {
@@ -610,29 +647,22 @@ define(function (require) {
 
         _updateLinkShapes: function() {
             var v = vec2.create();
-            var edges = this._graph.edges;
-            for (var i = 0, len = edges.length; i < len; i++) {
-                var edge = edges[i];
-                var sourceShape = edge.node1.shape;
-                var targetShape = edge.node2.shape;
+            var links = this._filteredLinks;
+            for (var i = 0, len = links.length; i < len; i++) {
+                var link = links[i];
+                var linkShape = this._linkShapes[i];
+                var sourceShape = this._nodeShapes[link.source];
+                var targetShape = this._nodeShapes[link.target];
 
-                var p1 = sourceShape.position;
-                var p2 = targetShape.position;
+                linkShape.style.xStart = sourceShape.position[0];
+                linkShape.style.yStart = sourceShape.position[1];
+                linkShape.style.xEnd = targetShape.position[0];
+                linkShape.style.yEnd = targetShape.position[1];
 
-                edge.shape.style.xStart = p1[0];
-                edge.shape.style.yStart = p1[1];
-                edge.shape.style.xEnd = p2[0];
-                edge.shape.style.yEnd = p2[1];
+                this.zr.modShape(linkShape.id);
 
-                if (edge.shape.type === 'bezier-curve') {
-                    edge.shape.style.cpX1 = (p1[0] + p2[0]) / 2 - (p2[1] - p1[1]) / 4;
-                    edge.shape.style.cpY1 = (p1[1] + p2[1]) / 2 - (p1[0] - p2[0]) / 4;
-                }
-
-                edge.shape.modSelf();
-
-                if (edge.shape._symbolShape) {
-                    var symbolShape = edge.shape._symbolShape;
+                if (linkShape._symbolShape) {
+                    var symbolShape = linkShape._symbolShape;
                     vec2.copy(symbolShape.position, targetShape.position);
 
                     vec2.sub(v, sourceShape.position, targetShape.position);
@@ -643,33 +673,37 @@ define(function (require) {
                         v, targetShape.style.width / 2 + 2
                     );
 
-                    var angle = Math.atan2(v[1], v[0]);
-                    symbolShape.rotation = Math.PI / 2 - angle;
+                    var angle;
+                    if (v[1] < 0) {
+                        angle = 2 * Math.PI - Math.acos(-v[0]);
+                    } else {
+                        angle = Math.acos(-v[0]);
+                    }
+                    symbolShape.rotation = angle  - Math.PI / 2;
 
-                    symbolShape.modSelf();
+                    this.zr.modShape(symbolShape.id);
                 }
             }
         },
 
-        _syncNodePositions: function() {
-            var graph = this._graph;
-            for (var i = 0; i < graph.nodes.length; i++) {
-                var gNode = graph.nodes[i];
-                var position = gNode.layout.position;
-                var node = gNode.data;
-                var shape = gNode.shape;
+        _update: function(e) {
+
+            this._layout.temperature = this._temperature;
+            this._layout.update();
+
+            for (var i = 0; i < this._layout.nodes.length; i++) {
+                var position = this._layout.nodes[i].position;
+                var shape = this._nodeShapes[i];
+                var node = this._filteredNodes[i];
                 if (shape.fixed || (node.fixX && node.fixY)) {
                     vec2.copy(position, shape.position);
-                }
-                else if (node.fixX) {
+                } else if (node.fixX) {
                     position[0] = shape.position[0];
                     shape.position[1] = position[1];
-                }
-                else if (node.fixY) {
+                } else if (node.fixY) {
                     position[1] = shape.position[1];
                     shape.position[0] = position[0];
-                }
-                else  {
+                } else  {
                     vec2.copy(shape.position, position);
                 }
 
@@ -681,21 +715,92 @@ define(function (require) {
                     }
                     vec2.copy(gPos, position);
                 }
-
-                shape.modSelf();
             }
+
+            this._temperature *= this._coolDown;
         },
 
-        _step: function(e) {
-            this._syncNodePositions();
+        _updateWorker: function(e) {
+            if (!this._updating) {
+                return;
+            }
+
+            var positionArr = new Float32Array(e.data);
+            var token = positionArr[0];
+            var ret = token === this._token;
+            // If token is from current layout instance
+            if (ret) {
+                var nNodes = (positionArr.length - 1) / 2;
+
+                for (var i = 0; i < nNodes; i++) {
+                    var shape = this._nodeShapes[i];
+                    var node = this._filteredNodes[i];
+                    
+                    var x = positionArr[i * 2 + 1];
+                    var y = positionArr[i * 2 + 2];
+
+                    if (shape.fixed || (node.fixX && node.fixY)) {
+                        positionArr[i * 2 + 1] = shape.position[0];
+                        positionArr[i * 2 + 2] = shape.position[1];
+                    } else if (node.fixX) {
+                        positionArr[i * 2 + 1] = shape.position[0];
+                        shape.position[1] = y;
+                    } else if (node.fixY) {
+                        positionArr[i * 2 + 2] = shape.position[1];
+                        shape.position[0] = x;
+                    } else  {
+                        shape.position[0] = x;
+                        shape.position[1] = y;
+                    }
+
+                    var nodeName = node.name;
+                    if (nodeName) {
+                        var gPos = this.__nodePositionMap[nodeName];
+                        if (!gPos) {
+                            gPos = this.__nodePositionMap[nodeName] = vec2.create();
+                        }
+                        vec2.copy(gPos, shape.position);
+                    }
+                }
+
+                this._layoutWorker.postMessage(positionArr.buffer, [positionArr.buffer]);
+            }
+
+            var self = this;
+            self._layoutWorker.postMessage({
+                cmd: 'update',
+                steps: this._steps,
+                temperature: this._temperature,
+                coolDown: this._coolDown
+            });  
+
+            for (var i = 0; i < this._steps; i++) {
+                this._temperature *= this._coolDown;
+            }
+
+            return ret;
+        },
+
+        _step: function(e){
+            if (this._layoutWorker) {
+                var res = this._updateWorker(e);
+                if (!res) {
+                    return;
+                }
+            } else {
+                if (this._temperature < 0.01) {
+                    return;
+                }
+                this._update();
+            }
 
             this._updateLinkShapes();
 
-            this.zr.refreshNextFrame();
-
-            if (this._layout.temperature > 0.01) {
-                this._layout.step(this._steps);
+            for (var i = 0; i < this._nodeShapes.length; i++) {
+                this.zr.modShape(this._nodeShapes[i].id);
             }
+
+            this.zr.refresh();
         },
 
         refresh: function(newOption) {
@@ -703,44 +808,20 @@ define(function (require) {
                 this.option = newOption;
                 this.series = this.option.series;
             }
-
-            this.legend = this.component.legend;
-            if (this.legend) {
-                this.getColor = function(param) {
-                    return this.legend.getColor(param);
-                };
-                this.isSelected = function(param) {
-                    return this.legend.isSelected(param);
-                };
-            }
-            else {
-                var colorMap = {};
-                var count = 0;
-                this.getColor = function (key) {
-                    if (colorMap[key]) {
-                        return colorMap[key];
-                    }
-                    if (!colorMap[key]) {
-                        colorMap[key] = this.zr.getColor(count++);
-                    }
-
-                    return colorMap[key];
-                };
-                this.isSelected = function () {
-                    return true;
-                };
-            }
-
-            this._init();
+            this.clear();
+            this._buildShape();
         },
 
         dispose: function(){
+            this._updating = false;
             this.clear();
             this.shapeList = null;
             this.effectList = null;
 
-            this._layout.dispose();
-            this._layout = null;
+            if (this._layoutWorker) {
+                this._layoutWorker.terminate();
+            }
+            this._layoutWorker = null;
 
             this.__nodePositionMap = {};
         }
@@ -765,8 +846,7 @@ define(function (require) {
     }
 
     function onmousemove() {
-        this._layout.temperature = 0.8;
-        this._step();
+        this._temperature = 0.8;
     }
     
     /**
@@ -792,10 +872,21 @@ define(function (require) {
     }
    
     function _randomInSquare(x, y, size) {
-        var v = vec2.create();
-        v[0] = (Math.random() - 0.5) * size + x;
-        v[1] = (Math.random() - 0.5) * size + y;
-        return v;
+        return [
+            (Math.random() - 0.5) * size + x,
+            (Math.random() - 0.5) * size + y
+        ];
+    }
+
+    function _filter(array, callback){
+        var len = array.length;
+        var result = [];
+        for(var i = 0; i < len; i++){
+            if(callback(array[i], i)){
+                result.push(array[i]);
+            }
+        }
+        return result;
     }
     
     zrUtil.inherits(Force, ChartBase);

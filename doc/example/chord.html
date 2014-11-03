@@ -44,21 +44,13 @@ option = {
         text: '测试数据'
     },
     tooltip : {
-        trigger: 'item',
-        formatter: function (params) {
-            if (params[4]) { // is edge
-                return params[2].weight;
-            } else {// is node
-                return params[1]
-            }
-        }
+        trigger: 'item'
     },
     toolbox: {
         show : true,
         y:'bottom',
         feature : {
             restore : {show: true},
-            magicType: {show: true, type: ['force', 'chord']},
             saveAsImage : {show: true}
         }
     },
@@ -80,11 +72,15 @@ option = {
             showScaleText : true,
             itemStyle : {
                 normal : {
-                    borderWidth : 0,
-                    borderColor : '#000',
+                    lineStyle : {
+                        width : 0,
+                        color : '#000'
+                    },
                     chordStyle : {
-                        borderWidth : 1,
-                        borderColor : '#333'
+                        lineStyle : {
+                            width : 1,
+                            color : '#333'
+                        }
                     },
                     label: {
                         show: true,
@@ -92,11 +88,15 @@ option = {
                     }
                 },
                 emphasis : {
-                    borderWidth : 0,
-                    borderColor : '#000',
+                    lineStyle : {
+                        width : 0,
+                        color : '#000'
+                    },
                     chordStyle : {
-                        borderWidth : 2,
-                        borderColor : 'black'
+                        lineStyle : {
+                            width : 2,
+                            color : 'black'
+                        }
                     }
                 }
             },

@@ -66,12 +66,6 @@ define(function (require) {
         this._tDom.onselectstart = function() {
             return false;
         };
-        this._tDom.onmouseover = function() {
-            self._mousein = true;
-        };
-        this._tDom.onmouseout = function() {
-            self._mousein = false;
-        };
         this._tDom.style.position = 'absolute';  // 不是多余的，别删！
         this.hasAppend = false;
         
@@ -327,11 +321,11 @@ define(function (require) {
                     );
                     
                     trigger === 'axis'
-                                ? this._showAxisTrigger(
-                                      serie.xAxisIndex, serie.yAxisIndex,
-                                      ecData.get(this._curTarget, 'dataIndex')
-                                  )
-                                : this._showItemTrigger();
+                               ? this._showAxisTrigger(
+                                     serie.xAxisIndex, serie.yAxisIndex,
+                                     ecData.get(this._curTarget, 'dataIndex')
+                                 )
+                               : this._showItemTrigger();
                 }
             }
         },
@@ -471,7 +465,7 @@ define(function (require) {
                 if (dataIndex <= 0) {
                     dataIndex = 0;
                 }
-                else if (y - top >= bottom - y) {
+                if (y - top >= bottom - y) {
                     dataIndex -= 1;
                 }
                 else {
@@ -511,6 +505,8 @@ define(function (require) {
             var seriesArray = [];
             var seriesIndex = [];
             var categoryAxis;
+            var x;
+            var y;
 
             var formatter;
             var position;
@@ -524,25 +520,17 @@ define(function (require) {
                 position = this.option.tooltip.position;
             }
 
-            var axisLayout = xAxisIndex != -1
-                             && this.component.xAxis.getAxis(xAxisIndex).type
-                                === ecConfig.COMPONENT_TYPE_AXIS_CATEGORY
-                             ? 'xAxis'      // 横轴为类目轴，找到所有用这条横轴并且axis触发的系列数据
-                             : yAxisIndex != -1
-                               && this.component.yAxis.getAxis(yAxisIndex).type
-                                  === ecConfig.COMPONENT_TYPE_AXIS_CATEGORY
-                               ? 'yAxis'    // 纵轴为类目轴，找到所有用这条纵轴并且axis触发的系列数据
-                               : false;
-            var x;
-            var y;
-            if (axisLayout) {
-                var axisIndex = axisLayout == 'xAxis' ? xAxisIndex : yAxisIndex;
-                categoryAxis = this.component[axisLayout].getAxis(axisIndex);
+            if (xAxisIndex != -1
+                && this.component.xAxis.getAxis(xAxisIndex).type
+                   === ecConfig.COMPONENT_TYPE_AXIS_CATEGORY
+            ) {
+                // 横轴为类目轴，找到所有用这条横轴并且axis触发的系列数据
+                categoryAxis = this.component.xAxis.getAxis(xAxisIndex);
                 for (var i = 0, l = series.length; i < l; i++) {
                     if (!this._isSelected(series[i].name)) {
                         continue;
                     }
-                    if (series[i][axisLayout + 'Index'] === axisIndex
+                    if (series[i].xAxisIndex === xAxisIndex
                         && this.deepQuery([series[i], this.option], 'tooltip.trigger') === 'axis'
                     ) {
                         showContent = this.query(series[i], 'tooltip.showContent') 
@@ -553,17 +541,10 @@ define(function (require) {
                                    || position;
                         
                         specialCssText += this._style(this.query(series[i], 'tooltip'));
-                        if (series[i].stack != null && axisLayout == 'xAxis') {
-                            seriesArray.unshift(series[i]);
-                            seriesIndex.unshift(i);
-                        }
-                        else {
-                            seriesArray.push(series[i]);
-                            seriesIndex.push(i);
-                        }
+                        seriesArray.push(series[i]);
+                        seriesIndex.push(i);
                     }
                 }
-                
                 // 寻找高亮元素
                 this.messageCenter.dispatch(
                     ecConfig.EVENT.TOOLTIP_HOVER,
@@ -574,33 +555,61 @@ define(function (require) {
                     },
                     this.myChart
                 );
-                
-                var rect;
-                if (axisLayout == 'xAxis') {
-                    x = this.subPixelOptimize(
-                        categoryAxis.getCoordByIndex(dataIndex),
-                        this._axisLineWidth
-                    );
-                    y = zrEvent.getY(this._event);
-                    rect = [
-                        x, this.component.grid.getY(), 
-                        x, this.component.grid.getYend()
-                    ];
-                }
-                else {
-                    x = zrEvent.getX(this._event);
-                    y = this.subPixelOptimize(
-                        categoryAxis.getCoordByIndex(dataIndex),
-                        this._axisLineWidth
-                    );
-                    rect = [
-                        this.component.grid.getX(), y, 
-                        this.component.grid.getXend(), y
-                    ];
-                }
+                y = zrEvent.getY(this._event);
+                x = this.subPixelOptimize(
+                    categoryAxis.getCoordByIndex(dataIndex),
+                    this._axisLineWidth
+                );
                 this._styleAxisPointer(
                     seriesArray,
-                    rect[0], rect[1], rect[2], rect[3],
+                    x, this.component.grid.getY(), 
+                    x, this.component.grid.getYend(),
+                    categoryAxis.getGap(), x, y
+                );
+            }
+            else if (yAxisIndex != -1
+                     && this.component.yAxis.getAxis(yAxisIndex).type
+                        === ecConfig.COMPONENT_TYPE_AXIS_CATEGORY
+            ) {
+                // 纵轴为类目轴，找到所有用这条纵轴并且axis触发的系列数据
+                categoryAxis = this.component.yAxis.getAxis(yAxisIndex);
+                for (var i = 0, l = series.length; i < l; i++) {
+                    if (!this._isSelected(series[i].name)) {
+                        continue;
+                    }
+                    if (series[i].yAxisIndex === yAxisIndex
+                        && this.deepQuery([series[i], this.option], 'tooltip.trigger') === 'axis'
+                    ) {
+                        showContent = this.query(series[i], 'tooltip.showContent') 
+                                      || showContent;
+                        formatter = this.query(series[i], 'tooltip.formatter') 
+                                    || formatter;
+                        position = this.query(series[i], 'tooltip.position') 
+                                   || position;
+                        specialCssText += this._style(this.query(series[i], 'tooltip'));
+                        seriesArray.push(series[i]);
+                        seriesIndex.push(i);
+                    }
+                }
+                // 寻找高亮元素
+                this.messageCenter.dispatch(
+                    ecConfig.EVENT.TOOLTIP_HOVER,
+                    this._event,
+                    {
+                        seriesIndex: seriesIndex,
+                        dataIndex: dataIndex
+                    },
+                    this.myChart
+                );
+                x = zrEvent.getX(this._event);
+                y = this.subPixelOptimize(
+                    categoryAxis.getCoordByIndex(dataIndex),
+                    this._axisLineWidth
+                );
+                this._styleAxisPointer(
+                    seriesArray,
+                    this.component.grid.getX(), y, 
+                    this.component.grid.getXend(), y,
                     categoryAxis.getGap(), x, y
                 );
             }
@@ -615,7 +624,7 @@ define(function (require) {
                     0, x, y
                 );
                 if (dataIndex >= 0) {
-                    this._showItemTrigger(true);
+                    this._showItemTrigger();
                 }
                 else {
                     clearTimeout(this._hidingTicket);
@@ -626,19 +635,19 @@ define(function (require) {
 
             if (seriesArray.length > 0) {
                 var data;
-                var value;
                 if (typeof formatter === 'function') {
                     var params = [];
                     for (var i = 0, l = seriesArray.length; i < l; i++) {
                         data = seriesArray[i].data[dataIndex];
-                        value = data != null
-                                ? (data.value != null ? data.value : data)
-                                : '-';
-                        
+                        data = data != null
+                               ? (data.value != null
+                                   ? data.value
+                                   : data)
+                               : '-';
+                               
                         params.push([
                             seriesArray[i].name || '',
                             categoryAxis.getNameByIndex(dataIndex),
-                            value,
                             data
                         ]);
                     }
@@ -852,10 +861,7 @@ define(function (require) {
             }
         },
         
-        /**
-         * @parma {boolean} axisTrigger 
-         */
-        _showItemTrigger: function (axisTrigger) {
+        _showItemTrigger: function () {
             if (!this._curTarget) {
                 return;
             }
@@ -870,24 +876,31 @@ define(function (require) {
             var position;
             var showContent;
             var specialCssText = '';
+            var indicator;
+            var html = '';
             if (this._curTarget._type != 'island') {
                 // 全局
-                var trigger = axisTrigger ? 'axis' : 'item';
-                if (this.option.tooltip.trigger === trigger) {
+                if (this.option.tooltip.trigger === 'item') {
                     formatter = this.option.tooltip.formatter;
                     position = this.option.tooltip.position;
                 }
                 // 系列
-                if (this.query(serie, 'tooltip.trigger') === trigger) {
-                    showContent = this.query(serie, 'tooltip.showContent') || showContent;
-                    formatter = this.query(serie, 'tooltip.formatter') || formatter;
-                    position = this.query(serie, 'tooltip.position') || position;
+                if (this.query(serie, 'tooltip.trigger') === 'item') {
+                    showContent = this.query(serie, 'tooltip.showContent') 
+                                  || showContent;
+                    formatter = this.query(serie, 'tooltip.formatter') 
+                                || formatter;
+                    position = this.query(serie, 'tooltip.position') 
+                               || position;
                     specialCssText += this._style(this.query(serie, 'tooltip'));
                 }
                 // 数据项
-                showContent = this.query(data, 'tooltip.showContent') || showContent;
-                formatter = this.query(data, 'tooltip.formatter') || formatter;
-                position = this.query(data, 'tooltip.position') || position;
+                showContent = this.query(data, 'tooltip.showContent') 
+                              || showContent;
+                formatter = this.query(data, 'tooltip.formatter') 
+                            || formatter;
+                position = this.query(data, 'tooltip.position') 
+                           || position;
                 specialCssText += this._style(this.query(data, 'tooltip'));
             }
             else {
@@ -908,9 +921,7 @@ define(function (require) {
                         value,
                         special,
                         special2,
-                        data,
-                        ecData.get(this._curTarget, 'seriesIndex'),
-                        ecData.get(this._curTarget, 'dataIndex')
+                        data
                     ],
                     this._curTicket,
                     this._setContent
@@ -918,54 +929,73 @@ define(function (require) {
             }
             else if (typeof formatter === 'string') {
                 this._curTicket = NaN;
-                formatter = formatter.replace('{a}', '{a0}')
-                                     .replace('{b}', '{b0}')
-                                     .replace('{c}', '{c0}');
+                formatter = formatter.replace('{a}','{a0}')
+                                     .replace('{b}','{b0}')
+                                     .replace('{c}','{c0}');
                 formatter = formatter.replace('{a0}', this._encodeHTML(serie.name || ''))
                                      .replace('{b0}', this._encodeHTML(name))
                                      .replace(
-                                         '{c0}',
+                                         '{c0}', 
                                          value instanceof Array ? value : this.numAddCommas(value)
                                      );
 
-                formatter = formatter.replace('{d}', '{d0}')
+                formatter = formatter.replace('{d}','{d0}')
                                      .replace('{d0}', special || '');
-                formatter = formatter.replace('{e}', '{e0}')
-                                     .replace(
-                                         '{e0}',
-                                         ecData.get(this._curTarget, 'special2') || ''
-                                     );
+                formatter = formatter.replace('{e}','{e0}')
+                            .replace('{e0}', ecData.get(this._curTarget, 'special2') || '');
 
                 this._tDom.innerHTML = formatter;
             }
             else {
                 this._curTicket = NaN;
-                if (serie.type === ecConfig.CHART_TYPE_RADAR && special) {
-                    this._tDom.innerHTML = this._itemFormatter.radar.call(
-                        this, serie, name, value, special
-                    );
+                if (serie.type === ecConfig.CHART_TYPE_SCATTER) {
+                    this._tDom.innerHTML = ''
+                        + (serie.name != null ? (this._encodeHTML(serie.name) + '<br/>') : '') 
+                        + (name === '' ? '' : (this._encodeHTML(name) + ' : ')) 
+                        + value 
+                        + (special == null ? '' : (' (' + special + ')'));
                 }
-                // chord 处理暂时跟 force 一样
-                // else if (serie.type === ecConfig.CHART_TYPE_CHORD) {
-                //     this._tDom.innerHTML = this._itemFormatter.chord.call(
-                //         this, serie, name, value, special, special2
-                //     );
-                // }
-                else if (serie.type === ecConfig.CHART_TYPE_EVENTRIVER) {
-                    this._tDom.innerHTML = this._itemFormatter.eventRiver.call(
-                        this, serie, name, value, data
-                    );
+                else if (serie.type === ecConfig.CHART_TYPE_RADAR && special) {
+                    indicator = special;
+                    html += this._encodeHTML(name === '' ? (serie.name || '') : name);
+                    html += html === '' ? '' : '<br />';
+                    for (var i = 0 ; i < indicator.length; i ++) {
+                        html += this._encodeHTML(indicator[i].text) + ' : ' 
+                                + this.numAddCommas(value[i]) + '<br />';
+                    }
+                    this._tDom.innerHTML = html;
+                }
+                else if (serie.type === ecConfig.CHART_TYPE_CHORD) {
+                    if (special2 == null) {
+                        // 外环上
+                        this._tDom.innerHTML = this._encodeHTML(name) + ' (' 
+                                               + this.numAddCommas(value) + ')';
+                    }
+                    else {
+                        var name1 = this._encodeHTML(name);
+                        var name2 = this._encodeHTML(special);
+                        // 内部弦上
+                        this._tDom.innerHTML = ''
+                            + (serie.name != null ? (this._encodeHTML(serie.name) + '<br/>') : '')
+                            + name1 + ' -> ' + name2 
+                            + ' (' + this.numAddCommas(value) + ')'
+                            + '<br />'
+                            + name2 + ' -> ' + name1
+                            + ' (' + this.numAddCommas(special2) + ')';
+                    }
                 }
                 else {
                     this._tDom.innerHTML = ''
                         + (serie.name != null ? (this._encodeHTML(serie.name) + '<br/>') : '')
-                        + (name === '' ? '' : (this._encodeHTML(name) + ' : '))
-                        + (value instanceof Array ? value : this.numAddCommas(value))
-                        + (special == null ? '' : (' (' + special + ')'));
+                        + this._encodeHTML(name) + ' : ' 
+                        + this.numAddCommas(value) 
+                        + (special == null ? '' : (' ('+ this.numAddCommas(special) +')'));
                 }
             }
 
-            if (!this._axisLineShape.invisible || !this._axisShadowShape.invisible) {
+            if (!this._axisLineShape.invisible 
+                || !this._axisShadowShape.invisible
+            ) {
                 this._axisLineShape.invisible = true;
                 this.zr.modShape(this._axisLineShape.id);
                 this._axisShadowShape.invisible = true;
@@ -994,59 +1024,6 @@ define(function (require) {
             );
         },
 
-        _itemFormatter: {
-            radar: function(serie, name, value, indicator){
-                var html = '';
-                html += this._encodeHTML(name === '' ? (serie.name || '') : name);
-                html += html === '' ? '' : '<br />';
-                for (var i = 0 ; i < indicator.length; i ++) {
-                    html += this._encodeHTML(indicator[i].text) + ' : ' 
-                            + this.numAddCommas(value[i]) + '<br />';
-                }
-                return html;
-            },
-            chord: function(serie, name, value, special, special2) {
-                if (special2 == null) {
-                    // 外环上
-                    return this._encodeHTML(name) + ' (' + this.numAddCommas(value) + ')';
-                }
-                else {
-                    var name1 = this._encodeHTML(name);
-                    var name2 = this._encodeHTML(special);
-                    // 内部弦上
-                    return ''
-                        + (serie.name != null ? (this._encodeHTML(serie.name) + '<br/>') : '')
-                        + name1 + ' -> ' + name2 
-                        + ' (' + this.numAddCommas(value) + ')'
-                        + '<br />'
-                        + name2 + ' -> ' + name1
-                        + ' (' + this.numAddCommas(special2) + ')';
-                }
-            },
-            eventRiver: function(serie, name, value, data) {
-                var html = '';
-                html += this._encodeHTML(serie.name === '' ? '' : (serie.name + ' : ') );
-                html += this._encodeHTML(name);
-                html += html === '' ? '' : '<br />';
-                data = data.evolution;
-                for (var i = 0, l = data.length; i < l; i++) {
-                    html += '<div style="padding-top:5px;">';
-                    if (!data[i].detail) {
-                        continue;
-                    }
-                    if (data[i].detail.img) {
-                        html += '<img src="' + data[i].detail.img 
-                                + '" style="float:left;width:40px;height:40px;">';
-                    }
-                    html += '<div style="margin-left:45px;">' + data[i].time + '<br/>';
-                    html += '<a href="' + data[i].detail.link + '" target="_blank">';
-                    html += data[i].detail.text + '</a></div>';
-                    html += '</div>';
-                }
-                return html;
-            }
-        },
-        
         /**
          * 设置坐标轴指示器样式 
          */
@@ -1057,9 +1034,9 @@ define(function (require) {
                 var axisPointer = this.option.tooltip.axisPointer;
                 var pointType = axisPointer.type;
                 var style = {
-                    line: {},
-                    cross: {},
-                    shadow: {}
+                    line: { },
+                    cross: { },
+                    shadow: { }
                 };
                 for (var pType in style) {
                     style[pType].color = axisPointer[pType + 'Style'].color;
@@ -1191,9 +1168,6 @@ define(function (require) {
         __onmousemove: function (param) {
             clearTimeout(this._hidingTicket);
             clearTimeout(this._showingTicket);
-            if (this._mousein) {
-                return;
-            }
             var target = param.target;
             var mx = zrEvent.getX(param.event);
             var my = zrEvent.getY(param.event);
@@ -1454,8 +1428,8 @@ define(function (require) {
                     case ecConfig.CHART_TYPE_SCATTER :
                         var dataIndex = params.dataIndex;
                         for (var i = 0, l = shapeList.length; i < l; i++) {
-                            if (ecData.get(shapeList[i], 'seriesIndex') == seriesIndex
-                                && ecData.get(shapeList[i], 'dataIndex') == dataIndex
+                            if (ecData.get(shapeList[i], 'seriesIndex') === seriesIndex
+                                && ecData.get(shapeList[i], 'dataIndex') === dataIndex
                             ) {
                                 this._curTarget = shapeList[i];
                                 x = shapeList[i].style.x;
@@ -1469,8 +1443,8 @@ define(function (require) {
                         var dataIndex = params.dataIndex;
                         for (var i = 0, l = shapeList.length; i < l; i++) {
                             if (shapeList[i].type === 'polygon'
-                                && ecData.get(shapeList[i], 'seriesIndex') == seriesIndex
-                                && ecData.get(shapeList[i], 'dataIndex') == dataIndex
+                                && ecData.get(shapeList[i], 'seriesIndex') === seriesIndex
+                                && ecData.get(shapeList[i], 'dataIndex') === dataIndex
                             ) {
                                 this._curTarget = shapeList[i];
                                 var vector = this.component.polar.getCenter(
@@ -1486,8 +1460,8 @@ define(function (require) {
                         var name = params.name;
                         for (var i = 0, l = shapeList.length; i < l; i++) {
                             if (shapeList[i].type === 'sector'
-                                && ecData.get(shapeList[i], 'seriesIndex') == seriesIndex
-                                && ecData.get(shapeList[i], 'name') == name
+                                && ecData.get(shapeList[i], 'seriesIndex') === seriesIndex
+                                && ecData.get(shapeList[i], 'name') === name
                             ) {
                                 this._curTarget = shapeList[i];
                                 var style = this._curTarget.style;
@@ -1518,7 +1492,7 @@ define(function (require) {
                         var name = params.name;
                         for (var i = 0, l = shapeList.length; i < l; i++) {
                             if (shapeList[i].type === 'sector'
-                                && ecData.get(shapeList[i], 'name') == name
+                                && ecData.get(shapeList[i], 'name') === name
                             ) {
                                 this._curTarget = shapeList[i];
                                 var style = this._curTarget.style;
@@ -1541,7 +1515,7 @@ define(function (require) {
                         var name = params.name;
                         for (var i = 0, l = shapeList.length; i < l; i++) {
                             if (shapeList[i].type === 'circle'
-                                && ecData.get(shapeList[i], 'name') == name
+                                && ecData.get(shapeList[i], 'name') === name
                             ) {
                                 this._curTarget = shapeList[i];
                                 x = this._curTarget.position[0];
@@ -1635,10 +1609,13 @@ define(function (require) {
         /**
          * 释放后实例不可用，重载基类方法
          */
-        onbeforDispose: function () {
+        dispose: function () {
             if (this._lastTipShape && this._lastTipShape.tipShape.length > 0) {
                 this.zr.delShape(this._lastTipShape.tipShape);
             }
+            this.clear();
+            this.shapeList = null;
+            
             clearTimeout(this._hidingTicket);
             clearTimeout(this._showingTicket);
             this.zr.un(zrConfig.EVENT.MOUSEMOVE, this._onmousemove);

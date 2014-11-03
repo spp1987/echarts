@@ -84,7 +84,7 @@ function refreshAll() {
     }
 }
 
-var developMode = true;
+var developMode = false;
 if (developMode) {
     // for develop
     require.config({
@@ -119,8 +119,7 @@ else {
             'echarts/chart/chord': fileLocation,
             'echarts/chart/force': fileLocation,
             'echarts/chart/gauge': fileLocation,
-            'echarts/chart/funnel': fileLocation,
-            'echarts/chart/eventRiver': fileLocation
+            'echarts/chart/funnel': fileLocation
         }
     });
 }
@@ -139,8 +138,7 @@ require(
         'echarts/chart/chord',
         'echarts/chart/map',
         'echarts/chart/gauge',
-        'echarts/chart/funnel',
-        'echarts/chart/eventRiver'
+        'echarts/chart/funnel'
     ],
     requireCallback
 );
